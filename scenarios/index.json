@@ -1,0 +1,6 @@
+{
+  "default": "topologie-demo.json",
+  "scenarios": [
+    { "file": "topologie-demo.json", "title": { "fr": "Topologie de démonstration", "en": "Demo topology" } }
+  ]
+}
