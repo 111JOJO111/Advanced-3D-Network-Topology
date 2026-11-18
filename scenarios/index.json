@@ -1,6 +1,7 @@
 {
-  "default": "topologie-demo.json",
+  "default": "ping.json",
   "scenarios": [
+    { "file": "ping.json", "title": { "fr": "Ping : ARP puis ICMP", "en": "Ping: ARP then ICMP" } },
     { "file": "topologie-demo.json", "title": { "fr": "Topologie de démonstration", "en": "Demo topology" } }
   ]
 }
