@@ -42,6 +42,16 @@ export class ResetCommand extends Command {
   execute() { return this.engine.reset(); }
 }
 
+/** Bascule lecture/pause (touche Espace, bouton unique du panneau VR). */
+export class ToggleCommand extends Command {
+  constructor(engine) { super(engine, 'toggle'); }
+  canExecute() { return this.engine.can('play') || this.engine.can('pause'); }
+  execute() {
+    if (this.engine.can('pause')) return this.engine.pause();
+    return this.engine.can('play') && this.engine.play();
+  }
+}
+
 /** Crée le jeu de commandes relié à un moteur (réel ou mock : même interface). */
 export function createCommands(engine) {
   return {
@@ -50,5 +60,6 @@ export function createCommands(engine) {
     step: new StepCommand(engine),
     speed: new SpeedCommand(engine),
     reset: new ResetCommand(engine),
+    toggle: new ToggleCommand(engine),
   };
 }

@@ -1,69 +1,96 @@
-// Squelette du moteur (S1). Il expose déjà l'interface définitive — play, pause, step,
-// setSpeed, reset, schedule, tick — pour que l'interface et le rendu puissent s'y brancher,
-// mais il ne traite pas encore la file d'évènements (ce sera le travail de S2).
+// Moteur à évènements discrets.
+//
+// Principe : la simulation est une file d'évènements triée par date (temps simulé, en ms).
+// L'horloge saute d'évènement en évènement ; elle ne dépend pas du nombre d'images par
+// seconde. Le rendu 3D se contente de lire `engine.now` pour placer les paquets.
+// Conséquence : la même suite d'actions donne toujours la même suite d'évènements,
+// ce qui rend les scénarios testables sans navigateur.
 
 import { Topics } from './events.js';
+import { EventBus } from './eventBus.js';
+import { SimState, StateMachine } from './state.js';
 
+export { SimState };
 export const SPEEDS = Object.freeze([0.5, 1, 2, 4]);
 
-export const SimState = Object.freeze({
-  READY: 'ready', PLAYING: 'playing', PAUSED: 'paused', FINISHED: 'finished',
-});
-
-const AVAILABLE = {
-  play: ['ready', 'paused'],
-  pause: ['playing'],
-  step: ['ready', 'paused'],
-  speed: ['ready', 'playing', 'paused', 'finished'],
-  reset: ['ready', 'playing', 'paused', 'finished'],
-};
-
-/** Mini-bus provisoire, remplacé en S2 par src/sim/eventBus.js. */
-export function createMiniBus() {
-  const listeners = new Map();
-  return {
-    on(topic, listener) {
-      if (!listeners.has(topic)) listeners.set(topic, new Set());
-      listeners.get(topic).add(listener);
-      return () => listeners.get(topic).delete(listener);
-    },
-    emit(topic, payload = {}) {
-      for (const listener of listeners.get(topic) || []) listener(payload, topic);
-    },
-  };
-}
+/** Garde-fou contre un protocole qui se répondrait à lui-même sans fin. */
+const MAX_EVENTS_PER_ADVANCE = 100000;
 
 export class Engine {
-  constructor(bus = createMiniBus()) {
+  constructor(bus = new EventBus()) {
     this.bus = bus;
-    this.queue = [];
-    this.now = 0;
+    this.machine = new StateMachine(bus);
+    this.queue = [];       // évènements triés par (time, id)
+    this.nextId = 0;
+    this.now = 0;          // horloge simulée (ms)
     this.speed = 1;
-    this.state = SimState.READY;
-    this.onReset = null;
+    this.stepping = false; // vrai pendant un « pas à pas »
+    /** Appelé quand la file est vide ; retourne true s'il a programmé une suite. */
     this.onIdle = null;
+    /** Appelé pendant reset(), avant l'annonce aux abonnés. */
+    this.onReset = null;
   }
 
-  can(command) { return (AVAILABLE[command] || []).includes(this.state); }
+  get state() { return this.machine.state; }
+  can(command) { return this.machine.can(command); }
+  pending() { return this.queue.length; }
 
-  _set(state) {
-    const previous = this.state;
-    this.state = state;
-    if (previous !== state) this.bus.emit(Topics.STATE, { state, previous });
+  /**
+   * Programme `run` dans `delay` ms de temps simulé.
+   * `boundary: true` marque une fin d'étape visible (l'arrivée d'un paquet) : c'est là
+   * que le pas à pas s'arrête.
+   * @returns {number} identifiant, utilisable avec cancel()
+   */
+  schedule(delay, run, { boundary = false } = {}) {
+    const event = { id: ++this.nextId, time: this.now + Math.max(0, delay), run, boundary };
+    // Insertion triée : à date égale, l'ordre de programmation est conservé (déterminisme).
+    let low = 0;
+    let high = this.queue.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (this.queue[middle].time <= event.time) low = middle + 1;
+      else high = middle;
+    }
+    this.queue.splice(low, 0, event);
+    return event.id;
   }
 
-  /** Programme un évènement dans `delay` ms de temps simulé (traité à partir de S2). */
-  schedule(delay, run) {
-    this.queue.push({ time: this.now + delay, run });
-    return this.queue.length;
+  /** Annule un évènement programmé (ex. un délai d'attente devenu inutile). */
+  cancel(id) {
+    const index = this.queue.findIndex((event) => event.id === id);
+    if (index === -1) return false;
+    this.queue.splice(index, 1);
+    return true;
   }
 
-  play() { if (!this.can('play')) return false; this._set(SimState.PLAYING); return true; }
-  pause() { if (!this.can('pause')) return false; this._set(SimState.PAUSED); return true; }
-  step() { return this.can('step'); }
+  play() {
+    if (!this.can('play')) return false;
+    this.stepping = false;
+    this.machine.to(SimState.PLAYING);
+    return true;
+  }
+
+  pause() {
+    if (!this.can('pause')) return false;
+    this.stepping = false;
+    this.machine.to(SimState.PAUSED);
+    return true;
+  }
+
+  /**
+   * Pas à pas : la lecture reprend jusqu'à la prochaine arrivée de paquet, puis se met
+   * en pause toute seule. Avec `instant: true`, le saut est immédiat (tests, panneau VR).
+   */
+  step({ instant = false } = {}) {
+    if (!this.can('step')) return false;
+    this.stepping = true;
+    this.machine.to(SimState.PLAYING);
+    if (instant) this.advance(Infinity);
+    return true;
+  }
 
   setSpeed(speed) {
-    if (!(speed > 0)) return false;
+    if (!(speed > 0) || !Number.isFinite(speed)) return false;
     this.speed = speed;
     this.bus.emit(Topics.SPEED, { speed });
     return true;
@@ -72,17 +99,66 @@ export class Engine {
   reset() {
     this.queue = [];
     this.now = 0;
-    this._set(SimState.READY);
+    this.stepping = false;
+    this.machine.reset();
     if (this.onReset) this.onReset();
     this.bus.emit(Topics.RESET, {});
     this.bus.emit(Topics.CLOCK, { now: 0 });
     return true;
   }
 
-  /** Appelé à chaque image avec le temps réel écoulé (ms). */
+  /** Appelé à chaque image avec le temps réel écoulé ; la vitesse s'applique ici. */
   tick(realDtMs) {
     if (this.state !== SimState.PLAYING) return;
-    this.now += realDtMs * this.speed;
+    this.advance(realDtMs * this.speed);
+  }
+
+  /** Lit le scénario d'une traite jusqu'à la fin (tests). */
+  runToEnd() {
+    if (this.can('play')) this.play();
+    this.advance(Infinity);
+  }
+
+  /** Avance l'horloge de `simDt` ms en traitant, dans l'ordre, tous les évènements échus. */
+  advance(simDt) {
+    if (this.state !== SimState.PLAYING) return;
+    const target = this.now + simDt;
+    let processed = 0;
+    while (this.state === SimState.PLAYING) {
+      if (this.queue.length === 0 && !this._askForMore()) {
+        this._finish();
+        break;
+      }
+      if (this.queue[0].time > target) {
+        this.now = target;
+        break;
+      }
+      this.now = this.queue[0].time;
+      let boundary = false;
+      // Tous les évènements de la même date forment un seul instant simulé.
+      while (this.queue.length && this.queue[0].time <= this.now) {
+        const event = this.queue.shift();
+        boundary = boundary || event.boundary;
+        event.run(this);
+        if (++processed > MAX_EVENTS_PER_ADVANCE) throw new Error('Simulation emballée : trop d\'évènements');
+      }
+      if (boundary && this.stepping && this.state === SimState.PLAYING) {
+        this.stepping = false;
+        if (this.queue.length === 0 && !this._askForMore()) this._finish();
+        else this.machine.to(SimState.PAUSED);
+        break;
+      }
+    }
     this.bus.emit(Topics.CLOCK, { now: this.now });
+  }
+
+  _askForMore() {
+    return !!(this.onIdle && this.onIdle() === true && this.queue.length > 0);
+  }
+
+  _finish() {
+    this.stepping = false;
+    this.machine.to(SimState.FINISHED);
+    this.bus.emit(Topics.FINISHED, { now: this.now });
   }
 }

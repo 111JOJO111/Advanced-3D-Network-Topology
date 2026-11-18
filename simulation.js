@@ -13,6 +13,8 @@ import { Engine, SPEEDS } from './src/sim/engine.js';
 import { createCommands } from './src/sim/commands.js';
 import { ProtocolRegistry } from './src/sim/registry.js';
 import { fetchScenario, validateScenario } from './src/sim/scenario.js';
+import { EventBus } from './src/sim/eventBus.js';
+import { Network, CORE_TEXTS } from './src/sim/network.js';
 
 export { Topics, SPEEDS };
 
@@ -20,10 +22,14 @@ export { Topics, SPEEDS };
 const STEP_GAP = 600;
 
 export function createSimulation() {
-  const engine = new Engine();
-  const bus = engine.bus;
+  const bus = new EventBus();
+  const engine = new Engine(bus);
   const registry = new ProtocolRegistry();
   const commands = createCommands(engine);
+  registry.addTexts(CORE_TEXTS);
+  let deviceTypes = {};
+  let customSteps = null; // étapes lancées à la main (ex. ping entre deux hôtes choisis)
+  let stepIndex = 0;
 
   const sim = {
     bus,
@@ -56,7 +62,9 @@ export function createSimulation() {
     async loadScenario(scenario) {
       const { ok, errors } = validateScenario(scenario);
       if (!ok) throw new Error('Scénario invalide :\n- ' + errors.join('\n- '));
+      await registry.load(scenario.protocols || []);
       sim.scenario = scenario;
+      customSteps = null;
       engine.reset();
       bus.emit(Topics.SCENARIO_LOADED, { scenario });
       return scenario;
@@ -71,7 +79,35 @@ export function createSimulation() {
       const own = sim.scenario && sim.scenario.explanations && sim.scenario.explanations[key];
       return own || registry.text(key);
     },
+
+    /** Équipement simulé (état vivant : adresses, tables), ou null. */
+    device(id) { return sim.network ? sim.network.device(id) : null; },
+
+    /** Étapes en cours : celles du scénario, ou une action lancée à la main. */
+    steps() { return customSteps || (sim.scenario ? sim.scenario.steps : []); },
   };
+
+  function scheduleStep(delay) {
+    const steps = sim.steps();
+    if (stepIndex >= steps.length) return false;
+    const index = stepIndex++;
+    engine.schedule(delay, () => {
+      bus.emit(Topics.STEP, { index, step: steps[index] });
+      sim.network.runAction(steps[index]);
+    });
+    return true;
+  }
+
+  // À chaque réinitialisation, le réseau est reconstruit : tables et caches repartent vides.
+  engine.onReset = () => {
+    if (!sim.scenario) return;
+    sim.network = new Network({ scenario: sim.scenario, engine, bus, registry, deviceTypes });
+    stepIndex = 0;
+    scheduleStep(0);
+  };
+
+  // Quand plus rien ne circule, l'étape suivante du scénario démarre.
+  engine.onIdle = () => scheduleStep(STEP_GAP);
 
   return sim;
 }
