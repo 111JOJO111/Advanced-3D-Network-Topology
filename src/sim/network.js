@@ -245,3 +245,26 @@ export class Network {
     return true;
   }
 }
+
+/** Fichier qui code le comportement de chaque type d'équipement. */
+const DEVICE_MODULES = { host: 'host', server: 'host', router: 'router', switch: 'switch' };
+
+/**
+ * Charge les fabriques des types d'équipement présents dans un scénario (patron Factory).
+ * Un type dont le fichier n'existe pas encore reste un équipement passif.
+ */
+export async function loadDeviceTypes(types, registry) {
+  const factories = {};
+  for (const type of new Set(types)) {
+    const file = DEVICE_MODULES[type];
+    if (!file) continue;
+    try {
+      const module = await import(new URL(`./devices/${file}.js`, import.meta.url).href);
+      factories[type] = module.create;
+      if (registry && module.texts) registry.addTexts(module.texts);
+    } catch (error) {
+      console.warn(`[sim] comportement « ${type} » indisponible (devices/${file}.js) : équipement passif.`, error.message);
+    }
+  }
+  return factories;
+}

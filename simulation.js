@@ -15,6 +15,7 @@ import { ProtocolRegistry } from './src/sim/registry.js';
 import { fetchScenario, validateScenario } from './src/sim/scenario.js';
 import { EventBus } from './src/sim/eventBus.js';
 import { Network, CORE_TEXTS } from './src/sim/network.js';
+import { loadDeviceTypes } from './src/sim/network.js';
 
 export { Topics, SPEEDS };
 
@@ -63,6 +64,7 @@ export function createSimulation() {
       const { ok, errors } = validateScenario(scenario);
       if (!ok) throw new Error('Scénario invalide :\n- ' + errors.join('\n- '));
       await registry.load(scenario.protocols || []);
+      deviceTypes = await loadDeviceTypes(scenario.devices.map((device) => device.type), registry);
       sim.scenario = scenario;
       customSteps = null;
       engine.reset();
@@ -85,6 +87,25 @@ export function createSimulation() {
 
     /** Étapes en cours : celles du scénario, ou une action lancée à la main. */
     steps() { return customSteps || (sim.scenario ? sim.scenario.steps : []); },
+
+    /**
+     * Rejoue la topologie depuis zéro avec une seule action choisie par l'utilisateur
+     * (ex. { action: 'ping', from: 'pc1', to: 'pc3' }) puis lance la lecture.
+     */
+    runAction(step) {
+      customSteps = [step];
+      engine.reset();
+      return engine.play();
+    },
+
+    /** Vrai si une action lancée à la main remplace les étapes du scénario. */
+    isCustom() { return customSteps !== null; },
+
+    /** Revient aux étapes prévues par le scénario. */
+    restoreScenario() {
+      customSteps = null;
+      engine.reset();
+    },
   };
 
   function scheduleStep(delay) {
