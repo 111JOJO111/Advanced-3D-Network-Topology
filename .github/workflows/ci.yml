@@ -1,0 +1,61 @@
+# Intégration continue : à chaque push et à chaque pull request, les tests sont lancés.
+# Sur la branche main, si les tests passent, le site est déployé sur GitHub Pages (HTTPS).
+#
+# Réglage à faire une fois dans le dépôt : Settings > Pages > Source = « GitHub Actions ».
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Un seul déploiement à la fois ; celui en cours n'est jamais interrompu.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+
+  deploy:
+    name: Déploiement GitHub Pages
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Assembler le site (uniquement les fichiers utiles au navigateur)
+        run: |
+          mkdir _site
+          # Seuls les fichiers présents sont copiés : la CI fonctionne dès les premiers dépôts de S1.
+          for item in index.html styles.css main.js simulation.js manifest.json sw.js precache-manifest.js src scenarios assets vendor; do
+            if [ -e "$item" ]; then cp -r "$item" _site/; fi
+          done
+          touch _site/.nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
