@@ -45,6 +45,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Générer la liste des fichiers à mettre en cache
+        run: node tools/generate-precache.mjs
       - name: Assembler le site (uniquement les fichiers utiles au navigateur)
         run: |
           mkdir _site
